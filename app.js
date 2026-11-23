@@ -32,7 +32,7 @@ function route() {
   const [v, id] = (location.hash.slice(1) || 'orders').split('/');
   document.querySelectorAll('.tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === v || (v === 'edit' && a.dataset.tab === 'new')));
   $('#storeLabel').textContent = S.store.replace(/جوهر/, '').trim() || 'متجر';
-  const views = { orders, new: () => form(), edit: () => form(id), order: () => receipt(id), settings };
+  const views = { orders, new: () => form(), edit: () => form(id), order: () => receipt(id), delivered, settings };
   (views[v] || orders)();
   window.scrollTo(0, 0);
 }
@@ -260,14 +260,15 @@ async function receipt(id) {
   title(o.no);
   app.innerHTML = `
   <img class="rc" id="rc" alt="وصل الطلب ${esc(o.no)}">
+  <p class="rc-hint">تكدر تضغط مطولاً على الوصل وتحفظه بالصور</p>
   <div class="status" role="group" aria-label="حالة الطلب">${Object.entries(STATUS).map(([k, t]) => `<button data-s="${k}" class="${o.status === k ? 'on' : ''}" aria-pressed="${o.status === k}">${t}</button>`).join('')}</div>
-  <button class="btn gold" id="share">إرسال الوصل للزبون</button>
+  <button class="btn gold" id="share"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5"/><path d="M5 14v5h14v-5"/></svg>إرسال الوصل للزبون</button>
+  <button class="btn" id="dl" style="margin-top:10px"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 19h14"/></svg>حفظ الوصل كصورة</button>
   <div class="btns">
     <button class="btn ghost sm" id="wa" ${o.customer.phone ? '' : 'disabled'}>رسالة واتساب</button>
-    <button class="btn ghost sm" id="dl">حفظ صورة</button>
     <button class="btn ghost sm" id="pr">طباعة / PDF</button>
-    <a class="btn ghost sm" href="#edit/${o.id}">تعديل</a>
   </div>
+  <a class="btn ghost sm" style="margin-top:10px" href="#edit/${o.id}">تعديل الطلب</a>
   <button class="btn danger sm" id="del" style="margin-top:22px">حذف الطلب</button>
   <div id="print"></div>`;
   const tok = (receipt.tok = (receipt.tok || 0) + 1);
@@ -278,7 +279,12 @@ async function receipt(id) {
   const blob = await new Promise(r => cv.toBlob(r, 'image/png'));
   if (tok !== receipt.tok || !$('#share')) return;
   const file = new File([blob], `${o.no}.png`, { type: 'image/png' });
-  const download = () => { const a = document.createElement('a'); a.href = url; a.download = file.name; a.click(); };
+  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const download = () => {
+    if (isIOS) { saveModal(url, file); return; }
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000); toast('انحفظ الوصل بالتنزيلات / الصور');
+  };
   $('#share').onclick = async () => {
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try { await navigator.share({ files: [file], title: 'وصل ' + o.no }); } catch (e) { /* أُلغيت */ }
@@ -301,6 +307,68 @@ async function receipt(id) {
     O = O.filter(x => x.id !== o.id); saveAll(); toast('انحذف الطلب'); location.hash = 'orders';
   };
 }
+
+function saveModal(url, file) {
+  const m = document.createElement('div'); m.className = 'modal'; m.setAttribute('role', 'dialog'); m.setAttribute('aria-label', 'حفظ الوصل');
+  m.innerHTML = `<img src="${url}" alt="الوصل"><p>اضغط مطولاً على الوصل ← «حفظ في الصور»</p><button class="btn gold" id="mShare">أو احفظه من قائمة المشاركة</button><button class="btn ghost" id="mClose">رجوع</button>`;
+  document.body.appendChild(m);
+  m.querySelector('#mClose').onclick = () => m.remove();
+  m.querySelector('#mShare').onclick = async () => { try { await navigator.share({ files: [file] }); } catch (e) {} };
+}
+
+/* ---------- delivered log ---------- */
+const deliveredAt = o => { const h = (o.history || []).filter(x => x.s === 'delivered').pop(); return h ? h.at : (o.updated || o.created); };
+let dm = null;
+function delivered() {
+  title('الطلبات المسلّمة');
+  const now = new Date(); if (!dm) dm = { y: now.getFullYear(), m: now.getMonth() };
+  const all = O.filter(o => o.status === 'delivered');
+  const rows = all.filter(o => { const d = new Date(deliveredAt(o)); return d.getFullYear() === dm.y && d.getMonth() === dm.m; })
+    .sort((a, b) => new Date(deliveredAt(b)) - new Date(deliveredAt(a)));
+  const sum = rows.reduce((s, o) => s + total(o), 0), dsum = rows.reduce((s, o) => s + num(o.delivery), 0);
+  const label = new Date(dm.y, dm.m, 1).toLocaleDateString('ar-IQ-u-nu-latn', { month: 'long', year: 'numeric' });
+  const isNow = dm.y === now.getFullYear() && dm.m === now.getMonth();
+  const days = {}; rows.forEach(o => { const k = new Date(deliveredAt(o)).toLocaleDateString('en-GB'); (days[k] = days[k] || []).push(o); });
+  app.innerHTML = `
+  <div class="month">
+    <button type="button" id="mPrev" aria-label="الشهر السابق">›</button>
+    <b>${label}</b>
+    <button type="button" id="mNext" aria-label="الشهر الجاي" ${isNow ? 'disabled style="opacity:.35"' : ''}>‹</button>
+  </div>
+  <div class="stats">
+    <div class="stat"><small>مبيعات المسلّمة</small><b>${money(sum)}</b><i>${rows.length} طلب انسلّم</i></div>
+    <div class="stat l"><small>صافي بدون التوصيل</small><b>${money(sum - dsum)}</b><i>التوصيل: ${money(dsum)}</i></div>
+  </div>
+  ${rows.length ? Object.entries(days).map(([d, list]) => `
+    <div class="day"><span dir="ltr">${d}</span><span>${list.length} طلب · ${money(list.reduce((s, o) => s + total(o), 0))}</span></div>
+    <div class="list">${list.map(o => `
+      <a class="card" href="#order/${o.id}">
+        <span class="no" dir="ltr" style="text-align:right">${esc(o.no)}</span><span class="badge s-delivered">انسلّم</span>
+        <span class="nm">${esc(o.customer.name)}</span><span class="amt">${money(total(o))}</span>
+        <span class="meta">${esc(o.customer.gov)}${o.customer.area ? ' · ' + esc(o.customer.area) : ''}</span><span class="meta" dir="ltr">${new Date(deliveredAt(o)).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</span>
+      </a>`).join('')}</div>`).join('') : `<div class="empty">ما أكو طلبات انسلّمت بهذا الشهر.<br>من تغيّر حالة الطلب لـ«انسلّم» يطلع هنا.</div>`}
+  ${rows.length ? `<button class="btn gold sm" id="xlD" style="margin-top:16px">تصدير مسلّمة الشهر Excel</button>` : ''}`;
+  $('#mPrev').onclick = () => { dm.m--; if (dm.m < 0) { dm.m = 11; dm.y--; } delivered(); };
+  $('#mNext').onclick = () => { if (isNow) return; dm.m++; if (dm.m > 11) { dm.m = 0; dm.y++; } delivered(); };
+  if (rows.length) $('#xlD').onclick = () => exportCSV([...rows].reverse(), `jawhar-delivered-${dm.y}-${String(dm.m + 1).padStart(2, '0')}.csv`, true);
+}
+function exportCSV(list, name, withDelivered) {
+  const head = ['رقم الطلب', 'التاريخ', ...(withDelivered ? ['تاريخ التسليم'] : []), 'الحالة', 'الزبون', 'الموبايل', 'المحافظة', 'المنطقة', 'ملاحظة', 'المنتجات', 'مبلغ المنتجات', 'التوصيل', 'الخصم', 'المجموع', 'الدفع'];
+  const cell = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const rows = list.map(o => [o.no, fmtDate(o.created), ...(withDelivered ? [fmtDate(deliveredAt(o))] : []), STATUS[o.status], o.customer.name, o.customer.phone, o.customer.gov, o.customer.area, o.customer.note, o.items.map(i => `${i.name} ×${i.qty}`).join(' + '), subtotal(o), num(o.delivery), num(o.discount), total(o), o.pay]);
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\uFEFF' + [head, ...rows].map(r => r.map(cell).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+/* ---------- theme ---------- */
+const SUN = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+const MOON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>';
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  const b = $('#themeBtn'); b.innerHTML = t === 'dark' ? SUN : MOON; b.setAttribute('aria-label', t === 'dark' ? 'الوضع النهاري' : 'الوضع الليلي');
+  document.querySelector('meta[name=theme-color]').content = t === 'dark' ? '#1F0A24' : '#3A1240';
+}
+applyTheme(document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
+$('#themeBtn').onclick = () => { const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; try { localStorage.setItem('jw.theme', t); } catch (e) {} applyTheme(t); };
 
 /* ---------- settings ---------- */
 function settings() {
@@ -366,12 +434,7 @@ function settings() {
       O = d.orders; P = d.products || []; S = Object.assign({}, DEF, d.settings || {}); saveAll(); toast('انسترجعت النسخة'); settings();
     } catch { toast('الملف مو نسخة وصولات جوهر'); }
   };
-  $('#xl').onclick = () => {
-    const head = ['رقم الطلب', 'التاريخ', 'الحالة', 'الزبون', 'الموبايل', 'المحافظة', 'المنطقة', 'ملاحظة', 'المنتجات', 'مبلغ المنتجات', 'التوصيل', 'الخصم', 'المجموع', 'الدفع'];
-    const cell = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const rows = [...O].sort((a, b) => a.n - b.n).map(o => [o.no, fmtDate(o.created), STATUS[o.status], o.customer.name, o.customer.phone, o.customer.gov, o.customer.area, o.customer.note, o.items.map(i => `${i.name} ×${i.qty}`).join(' + '), subtotal(o), num(o.delivery), num(o.discount), total(o), o.pay]);
-    dlFile('﻿' + [head, ...rows].map(r => r.map(cell).join(',')).join('\r\n'), `jawhar-orders-${stamp()}.csv`, 'text/csv;charset=utf-8');
-  };
+  $('#xl').onclick = () => exportCSV([...O].sort((a, b) => a.n - b.n), `jawhar-orders-${stamp()}.csv`, false);
 }
 
 /* أيقونة الشاشة الرئيسية للآيفون (PNG مرسومة بالكود) */
